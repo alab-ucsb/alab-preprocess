@@ -1,4 +1,4 @@
-function [tempsess] = behavPreprocess(pos, recList, n)
+function [tempsess] = behavPreprocess(pos, recList, n, bTsPath)
 
 % Define some global vars that may need to change from comp to comp
 % or depending on what thresholds you want.
@@ -98,5 +98,6 @@ tempsess.hd = hd';
 tempsess.lv = vel;
 tempsess.acc = acc;
 
-[tempsess.t, ~, ~] = loadFrameTimes();
+tsColumn = readtable(bTsPath); tsColumn = tsColumn.Timestamp;
+[tempsess.t, ~, ~] = loadFrameTimes(tsColumn);
 tempsess.bsF = 1/median(diff(tempsess.t));
