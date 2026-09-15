@@ -90,21 +90,19 @@ for n = 1:2 %1 : size(recList,1)
     %% Load scoring if it exists
     if ismember('score', recList.Properties.VariableNames)
         if ~isempty(recList.score{n})
-        sess(n).score = readtable(fullfile(naspath,recList.path{n},recList.score{n}));
-        % sess(n).score.ind = score.ImageIndex;
-        % sess(n).score.code = score.BehaviorType;
-        % sess(n).score.codeDetail = score.Behavior;
+        score = readtable(fullfile(naspath,recList.path{n},recList.score{n}));
+        sess(n).score.ind = score.ImageIndex;
+        sess(n).score.code = score.BehaviorType;
+        sess(n).score.codeDetail = score.Behavior;
         else
-            % sess(n).score.ind = [];
-            % sess(n).score.code = [];
-            % sess(n).score.codeDetail = [];
-            sess(n).score = [];
+            sess(n).score.ind = [];
+            sess(n).score.code = [];
+            sess(n).score.codeDetail = [];
         end
     else
-        % sess(n).score.ind = [];
-        % sess(n).score.code = [];
-        % sess(n).score.codeDetail = [];
-        sess(n).score = [];
+        sess(n).score.ind = [];
+        sess(n).score.code = [];
+        sess(n).score.codeDetail = [];
     end
 
 end
