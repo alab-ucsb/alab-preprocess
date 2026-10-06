@@ -3,7 +3,7 @@ function [tempsess] = behavPreprocess(pos, recList, n, bTsPath)
 % Define some global vars that may need to change from comp to comp
 % or depending on what thresholds you want.
 naspath = 'Z:\'; % Directory on local PC of the NAS
-velThresh = 120; % Maximum speed of the animal
+velThresh = 150; % Maximum speed of the animal
 
 % Extract position data and clean
 clear dlcpos dlcind
