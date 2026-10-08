@@ -1,4 +1,12 @@
-% chzBrdBehavioralAnalysis
+% chzBrdBehavioralAnalysis  (pkgMultiSession_v2)
+% v2 changes (2026-10-08):
+%  - TTL sample numbers converted from Open Ephys absolute sample numbers to
+%    1-based indices into this recording (previously offset by the first
+%    sample number, e.g. 1,321,412 samples = 44 s).
+%  - One syncClocksCamLED call handles LED+camera, LED-only or camera-only.
+%  - Uses behavPreprocess_v2 (fixes position/frame misalignment).
+%  - Kilosort spike_times (0-based) converted to 1-based; session sample
+%    boundaries made contiguous and inclusive.
 % Dependencies:
 % CircStat: https://github.com/circstat/circstat-matlab
 % OpenEphys : https://github.com/open-ephys/open-ephys-matlab-tools
@@ -75,33 +83,36 @@ for n = 1 : size(recList,1)
     clear ttl* dTtlPos
     ttl = rec.ttlEvents(sn);
     
-    %% Synchronize with LED strip TTL pulses;
-    % Load video TTL roi_data (i.e. pulse train on IR LED strip)
+    %% Synchronize video frames to the neural clock (LED and/or camera TTLs)
+    % Open Ephys sample_number is the acquisition board's absolute sample
+    % counter; convert to 1-based indices into this recording.
+    s0 = double(sess(n).info.indSamp(1));           % first neural sample number
+
+    % Camera frame TTL (line 4) - rise and fall events
+    camE = double(ttl.sample_number(ttl.line==4)) - s0 + 1;
+
+    % LED strip TTL (line 2) + LED pixel intensity from the video ROI
     clear pxlint
     if ~isempty(recList.vidTTLout{n})
         pxlint = load(fullfile(naspath,recList.path{n},recList.vidTTLout{n}));
+        ledI = pxlint.roi_data;
+        ledE = double(ttl.sample_number(ttl.line==2)) - s0 + 1;
+        extra = {};
+    else
+        % Camera only: frame count must be supplied. If the AVI is missing
+        % frames at the start (ST08_10022026_A: first 4), also add
+        % 'CamOffsetFrames', 4 - check A.cam.anchorM on sessions with both.
+        ledI = []; ledE = [];
+        extra = {'NFrames', length(sess(n).x)};
+    end
 
-        % Reconstruct the TTL inputs
-        LEDch = find(ttl.line==2);
-        LEDttl = ttl(LEDch,:);
-        [rcTtl,LEDind] = reconLEDTtlNeuralClock(LEDttl, sess(n).info.indSamp, sess(n).info.timeneu);
-
-        sess(n).sync = syncClocks(pxlint.roi_data, rcTtl);
+    if ~isempty(ledE) || ~isempty(camE)
+        sess(n).sync = syncClocksCamLED(ledI, ledE, camE, ...
+            'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
+            'NEphys', sess(n).info.numSamp, extra{:});
     else
         sess(n).sync = [];
     end
-    
-    %% Sync with camera pulses
-    CAMch = find(ttl.line==4);
-    CAMttl = ttl(CAMch,:);
-    [rCamTtl,CAMind] = reconLEDTtlNeuralClock(CAMttl, sess(n).info.indSamp, sess(n).info.timeneu);
-    % sess(n).sync = syncClocksCamLED(pxlint.roi_data, LEDttl.sample_number, CAMttl.sample_number...
-    %     ,'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
-    %   'NEphys', length(sess(n).info.timeneu))
-
-    sess(n).sync = syncClocksCamLED([], [], CAMttl.sample_number...
-    ,'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
-      'NEphys', length(sess(n).info.timeneu), 'NFrames', length(sess(n).x))
 
     %% Load scoring if it exists
     if ismember('score', recList.Properties.VariableNames)
@@ -138,10 +149,12 @@ spiketemps = readNPY(fullfile(kspath,"spike_templates.npy"));
 gcells = clusterinf.cluster_id(strmatch('good',clusterinf.group));
 
 %% Package sample numbers by session.
+% indsess(sn,:) = [first last] 1-based sample of session sn in the
+% concatenated recording (contiguous, inclusive).
 clear indsess sn
 indsess(1,:) = [1 sess(1).info.numSamp];
 for sn = 2 : size(sess,2)
-    indsess(sn,:) = [indsess(sn-1,2) + 1  indsess(sn-1,2)+1 + sess(sn).info.numSamp];
+    indsess(sn,:) = [indsess(sn-1,2)+1, indsess(sn-1,2)+sess(sn).info.numSamp];
 end
 
 % Match spike times to corresponding behavioral frames
@@ -151,11 +164,11 @@ for sn = 1 : length(sess)
         clear cn spkind;
         cn = gcells(nn);
         sess(sn).neu(nn).info = clusterinf(clusterinf.cluster_id==cn,:);
-        spkind = double(spikets(spikeclusters==cn));
+        spkind = double(spikets(spikeclusters==cn)) + 1; % Kilosort is 0-based -> 1-based
 
         % for sn = 1 : size(sess,2)
             clear sessspkind
-            sesspkind = spkind(find(spkind>=indsess(sn,1) & spkind<indsess(sn,2))); % Find spike inds in this session
+            sesspkind = spkind(spkind>=indsess(sn,1) & spkind<=indsess(sn,2)); % Find spike inds in this session
             sesspkind = sesspkind - indsess(sn,1)+1; % Bring indices to 1.
             sess(sn).neu(nn).ts = sess(sn).info.timeneu(sesspkind); % Pull spike times within session.
 
@@ -183,13 +196,14 @@ for sn = 1 : length(sess)
     end
 end
 
+%%
 for sn = 1
     for nn = 1 : length(gcells)
     figure(1);
     plot(sess(sn).x,sess(sn).y,'color',[.5 .5 .5]); hold on;
-    scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,10,sess(sn).neu(nn).shd,'filled');
-    colormap(hsv)
-    pause; clf(1);
+    scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,20,sess(sn).neu(nn).shd,'filled');
+    colormap(hsv); axis square; axis tight; 
+    pause; clf(1); 
     end
 end
 

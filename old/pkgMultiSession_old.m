@@ -86,9 +86,9 @@ for n = 1 : size(recList,1)
         LEDttl = ttl(LEDch,:);
         [rcTtl,LEDind] = reconLEDTtlNeuralClock(LEDttl, sess(n).info.indSamp, sess(n).info.timeneu);
 
-        sess(n).sync = syncClocks(pxlint.roi_data, rcTtl);
+        % sess(n).sync = syncClocks(pxlint.roi_data, rcTtl);
     else
-        sess(n).sync = [];
+        % sess(n).sync = [];
     end
     
     %% Sync with camera pulses
@@ -99,9 +99,9 @@ for n = 1 : size(recList,1)
         ,'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
       'NEphys', length(sess(n).info.timeneu))
 
-    sess(n).sync = syncClocksCamLED([], [], CAMttl.sample_number...
-    ,'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
-      'NEphys', length(sess(n).info.timeneu), 'NFrames', length(sess(n).x))
+    % sess(n).sync = syncClocksCamLED([], [], CAMttl.sample_number...
+    % ,'TtlIsEdges', true, 'EdgesIncludeFalling', true, ...
+    %   'NEphys', length(sess(n).info.timeneu), 'NFrames', length(sess(n).x))
 
     %% Load scoring if it exists
     if ismember('score', recList.Properties.VariableNames)
@@ -183,13 +183,14 @@ for sn = 1 : length(sess)
     end
 end
 
+%%
 for sn = 1
     for nn = 1 : length(gcells)
     figure(1);
     plot(sess(sn).x,sess(sn).y,'color',[.5 .5 .5]); hold on;
-    scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,10,sess(sn).neu(nn).shd,'filled');
-    colormap(hsv)
-    pause; clf(1);
+    scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,20,sess(sn).neu(nn).shd,'filled');
+    colormap(hsv); axis square; axis tight; 
+    pause; clf(1); 
     end
 end
 

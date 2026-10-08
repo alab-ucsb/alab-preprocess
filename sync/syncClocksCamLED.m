@@ -81,6 +81,8 @@ function A = syncClocksCamLED(led_intensity, ledTtl, camTtl, varargin)
 %  *'CamAlign'     camera-only pairing when pulse count ~= frame count:
 %                  'first' (pulse 1 = frame 1) | 'last' (last pulse = last
 %                  frame).                                          ['first']
+%  *'MaxRateErrPpm' search range for the video-vs-ephys clock-rate error in
+%                  the LED lag search (true frame rate vs FsVid).    [3000]
 %  *'CamMinMatchFrac'  fraction of frames that must get their own camera
 %                  pulse for the camera mapping to count as valid.   [0.95]
 %
@@ -123,6 +125,7 @@ p.addParameter('FirstEdge', 'rising');
 p.addParameter('NFrames', []);
 p.addParameter('LedPolarity', 'auto');
 p.addParameter('CamAlign', 'first');
+p.addParameter('MaxRateErrPpm', 3000);
 p.parse(varargin{:});
 o = p.Results;
 o.Method = lower(o.Method);
@@ -358,22 +361,17 @@ L.span = span; L.W = W; L.pPulse = pPulse; L.vEdgeIdx = vEdgeIdx;
 L.vt = vt; L.et = et;
 if numel(vt) < 2, L.msg = 'fewer than 2 LED edges in video'; return; end
 
-% 3. coarse lag (binned edge trains, xcorr)
-dt = 1/o.FsVid;
-edges = 0 : dt : max([vt;et;ttlDurS]) + dt;
-hv = histcounts(vt, edges);  hv = hv - mean(hv);
-he = histcounts(et, edges);  he = he - mean(he);
-if isempty(o.MaxLagS), [c,lg] = xcorr(he, hv);
-else,                  [c,lg] = xcorr(he, hv, round(o.MaxLagS/dt)); end
-[~,k] = max(c);
-lag0 = lg(k) * dt;
-L.lag0 = lag0;
+% 3. coarse lag AND clock-rate ratio (binned edge trains, xcorr over a grid
+%    of rates). The rate search matters when the true frame rate differs
+%    from FsVid (e.g. 30.03 vs 30 Hz = 1000 ppm = 2 s over 30 min).
+[lag0, r0] = rate_lag_search(vt, et, ttlDurS, o);
+L.lag0 = lag0;  L.rate0 = r0;
 
 % 4. match video edges to nearest ephys edge
 tol = 1.5 / o.FsVid;
 mt = nan(size(vt));
 for i = 1:numel(vt)
-    [d,j] = min(abs(et - (vt(i) + lag0)));
+    [d,j] = min(abs(et - (r0*vt(i) + lag0)));
     if d < tol, mt(i) = et(j); end
 end
 keep = ~isnan(mt);
@@ -506,6 +504,33 @@ C.ok = true;
 end
 
 % ---------------------------------------------------------------------------
+function [lag, r] = rate_lag_search(vt, et, ttlDurS, o)
+% Grid search over clock-rate ratio r (ephys_t ~ r*video_t + lag): for each r,
+% cross-correlate binned edge trains and keep the (r, lag) with the highest
+% peak. Coarse pass (0.1 s bins, wide r range), then fine pass (1-frame bins).
+dur = max(vt(end), 1);
+span = o.MaxRateErrPpm * 1e-6;
+rc = 1;  lag = 0;
+for dt = [0.1, 1/o.FsVid]
+    step = dt / (2*dur);                            % drift over record < bin/2
+    rs = rc + (-span : step : span);
+    if isempty(rs), rs = rc; end
+    tEnd = max([vt*max(rs); et; ttlDurS]) + dt;
+    edges = 0 : dt : tEnd;
+    he = histcounts(et, edges);  he = he - mean(he);
+    best = -inf;
+    for r = rs
+        hv = histcounts(vt*r, edges);  hv = hv - mean(hv);
+        if isempty(o.MaxLagS), [c,lg] = xcorr(he, hv);
+        else,                  [c,lg] = xcorr(he, hv, round(o.MaxLagS/dt)); end
+        [cm, k] = max(c);
+        if cm > best, best = cm; rc_new = r; lag = lg(k)*dt; end
+    end
+    rc = rc_new;  span = 2*step;                    % refine around best
+end
+r = rc;
+end
+
 function [m, C] = offsets_from_led(L, ct, C, vt_all, o)
 % Each LED edge says "frame k is the first frame to see an LED onset at ephys
 % time e". With the pulse marking exposure START, frame k's pulse lies within
@@ -715,6 +740,9 @@ if L.ok
     fprintf('LED polarity       : %s  [%s]\n', L.polarityName, L.polarityHow);
     fprintf('matched edges      : %d of %d video / %d ephys\n', L.nMatched, numel(L.vt), numel(L.et));
     fprintf('clock ratio (a)    : %.7f  (%+.1f ppm drift)\n', L.a, (L.a-1)*1e6);
+    if isempty(o.FrameTimes)
+        fprintf('effective frame rate on ephys clock: %.4f Hz (FsVid = %g)\n', o.FsVid/L.a, o.FsVid);
+    end
     fprintf('offset (b)         : %.4f s\n', L.b);
     fprintf('residual std       : %.4f s   (quantization floor ~%.4f s)\n', ...
         L.residualStd, T/sqrt(12));
