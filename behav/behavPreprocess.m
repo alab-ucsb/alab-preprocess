@@ -56,8 +56,8 @@ hd = circ_rad2ang(wrapTo2Pi(atan2(deltay,deltax)+pi/2));
 %% Calculate mean x,y position and range
 x = nanmean([dlcpos(:,1),dlcpos(:,3)],2);
 y = nanmean([dlcpos(:,2),dlcpos(:,4)],2);
-x(x<prctile(x,0.5) | x>prctile(x,99.5)) = NaN;
-y(y<prctile(y,0.5) | y>prctile(y,99.5)) = NaN;
+% x(x<prctile(x,0.1) | x>prctile(x,99.9)) = NaN;
+% y(y<prctile(y,0.1) | y>prctile(y,99.9)) = NaN;
 
 mxx = nanmax(x); mxy = nanmax(y);
 minx = nanmin(x); miny = nanmin(y);

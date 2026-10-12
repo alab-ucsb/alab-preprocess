@@ -7,6 +7,12 @@
 %  - Uses behavPreprocess_v2 (fixes position/frame misalignment).
 %  - Kilosort spike_times (0-based) converted to 1-based; session sample
 %    boundaries made contiguous and inclusive.
+% v3 changes (2026-10-12):
+%  - Spike splitting checks recList session lengths/order against the
+%    concatenated file (concatCont_v2 *_info.mat) and the Kilosort spike range.
+%  - Per-spike vectors (.ts, .spkind, .sx ...) stay aligned: spikes outside the
+%    video get NaN instead of being deleted; .inVid marks spikes with a frame.
+%  - Checks that tracking and sync have the same number of frames.
 % Dependencies:
 % CircStat: https://github.com/circstat/circstat-matlab
 % OpenEphys : https://github.com/open-ephys/open-ephys-matlab-tools
@@ -73,7 +79,7 @@ for n = 1 : size(recList,1)
         sess(n).lv = [];
         sess(n).acc = [];
         sess(n).t = [];
-        sess(n).bsF = [];
+        sess(n).info.bsF = [];
     end
 
     %% Sync signals
@@ -104,6 +110,10 @@ for n = 1 : size(recList,1)
         % 'CamOffsetFrames', 4 - check A.cam.anchorM on sessions with both.
         ledI = []; ledE = [];
         extra = {'NFrames', length(sess(n).x)};
+        if isempty(sess(n).x)
+            warning('Session %d: camera-only sync needs the frame count (no tracking loaded); skipping sync.', n);
+            camE = [];
+        end
     end
 
     if ~isempty(ledE) || ~isempty(camE)
@@ -146,65 +156,88 @@ spikets = readNPY(fullfile(kspath,"spike_times.npy"));
 spikeclusters = readNPY(fullfile(kspath,"spike_clusters.npy"));
 spiketemps = readNPY(fullfile(kspath,"spike_templates.npy"));
 
-gcells = clusterinf.cluster_id(strmatch('good',clusterinf.group));
+gcells = clusterinf.cluster_id(strcmp(clusterinf.group, 'good'));
 
 %% Package sample numbers by session.
 % indsess(sn,:) = [first last] 1-based sample of session sn in the
-% concatenated recording (contiguous, inclusive).
+% concatenated recording (contiguous, inclusive). Sessions MUST be listed in
+% recList in the same order they were concatenated.
 clear indsess sn
-indsess(1,:) = [1 sess(1).info.numSamp];
-for sn = 2 : size(sess,2)
-    indsess(sn,:) = [indsess(sn-1,2)+1, indsess(sn-1,2)+sess(sn).info.numSamp];
+nSampSess = arrayfun(@(s) double(s.info.numSamp), sess(:));
+indsess = [cumsum([1; nSampSess(1:end-1)]), cumsum(nSampSess)];
+
+% --- sanity checks: session lengths/order vs. the concatenated file -------
+allSpk = double(spikets) + 1;                        % Kilosort is 0-based -> 1-based
+assert(numel(allSpk) == numel(spikeclusters), 'spike_times / spike_clusters length mismatch.');
+assert(max(allSpk) <= indsess(end,2), ['Spikes extend past the summed session ' ...
+    'lengths (%d > %d): recList sessions do not match the concatenated file.'], ...
+    max(allSpk), indsess(end,2));
+ci = dir(fullfile(kspath, '..', '*_info.mat'));      % written by concatCont_v2
+if isempty(ci), ci = dir(fullfile(kspath, '*_info.mat')); end
+if ~isempty(ci)
+    tmp = load(fullfile(ci(1).folder, ci(1).name));
+    assert(isequal(tmp.info.nSamples(:), nSampSess(:)), ['Session lengths in ' ...
+        'recList (%s) differ from the concatenated file (%s, %s): wrong order or ' ...
+        'wrong sessions.'], mat2str(nSampSess'), mat2str(tmp.info.nSamples'), ci(1).name);
+    fprintf('Session order/lengths match %s\n', ci(1).name);
+else
+    warning('No concatCont_v2 *_info.mat found; could not verify session order.');
 end
+
+% Session of every spike, and its 1-based sample index within that session
+spkSess = discretize(allSpk, [indsess(:,1); indsess(end,2)+1]);
+spkLocal = allSpk - indsess(spkSess,1) + 1;
 
 % Match spike times to corresponding behavioral frames
 for sn = 1 : length(sess)
+    hasSync = ~isempty(sess(sn).sync);
+    if hasSync && ~isempty(sess(sn).x)
+        assert(numel(sess(sn).x) == numel(sess(sn).sync.frameEphysTime), ...
+            ['Session %d: %d position samples but %d synced video frames - ' ...
+            'tracking and sync refer to different frame sets.'], ...
+            sn, numel(sess(sn).x), numel(sess(sn).sync.frameEphysTime));
+    end
     for nn = 1 : length(gcells)
-        nn
-        clear cn spkind;
         cn = gcells(nn);
         sess(sn).neu(nn).info = clusterinf(clusterinf.cluster_id==cn,:);
-        spkind = double(spikets(spikeclusters==cn)) + 1; % Kilosort is 0-based -> 1-based
+        k = spikeclusters(:)==cn & spkSess==sn;
+        sesspkind = spkLocal(k);                     % 1-based samples within session
+        sess(sn).neu(nn).sampind = sesspkind;
+        sess(sn).neu(nn).ts = sess(sn).info.timeneu(sesspkind); % all spike times
 
-        % for sn = 1 : size(sess,2)
-            clear sessspkind
-            sesspkind = spkind(spkind>=indsess(sn,1) & spkind<=indsess(sn,2)); % Find spike inds in this session
-            sesspkind = sesspkind - indsess(sn,1)+1; % Bring indices to 1.
-            sess(sn).neu(nn).ts = sess(sn).info.timeneu(sesspkind); % Pull spike times within session.
-
-            if ~isempty(sess(sn).sync) % If no sync you cannot match spikes to behavior.
-                sess(sn).neu(nn).spkind = sess(sn).sync.ephysSampleToFrame(sesspkind); % Pull corresponding behav frames for each spike.
-                sess(sn).neu(nn).spkind(isnan(sess(sn).neu(nn).spkind)) = [];
-
-                % Extract behav variables for each spike.
-                sess(sn).neu(nn).sx = sess(sn).x(sess(sn).neu(nn).spkind);
-                sess(sn).neu(nn).sy = sess(sn).y(sess(sn).neu(nn).spkind);
-                sess(sn).neu(nn).shd = sess(sn).hd(sess(sn).neu(nn).spkind);
-                sess(sn).neu(nn).slv = sess(sn).lv(sess(sn).neu(nn).spkind);
-                sess(sn).neu(nn).sacc = sess(sn).acc(sess(sn).neu(nn).spkind);
-            else
-                % There is no synchronization for video so you cannot
-                % populate these elements.
-                sess(sn).neu(nn).spkind = [];
-                sess(sn).neu(nn).sx = [];
-                sess(sn).neu(nn).sy = [];
-                sess(sn).neu(nn).shd = [];
-                sess(sn).neu(nn).slv = [];
-                sess(sn).neu(nn).sacc = [];
+        if hasSync && ~isempty(sess(sn).x)
+            fr = sess(sn).sync.ephysSampleToFrame(sesspkind);  % NaN = no video frame
+            inVid = ~isnan(fr);
+            % Keep every vector aligned with .ts (one entry per spike); spikes
+            % outside the video get NaN. Use .inVid to select video spikes.
+            sess(sn).neu(nn).inVid  = inVid;
+            sess(sn).neu(nn).spkind = fr;
+            for v = {'x','y','hd','lv','acc'}
+                bv = sess(sn).(v{1});
+                sv = nan(size(fr));
+                sv(inVid) = bv(fr(inVid));
+                sess(sn).neu(nn).(['s' v{1}]) = sv;
             end
-        % end
+        else
+            % No sync or no tracking: cannot match spikes to behavior.
+            sess(sn).neu(nn).inVid  = false(size(sesspkind));
+            sess(sn).neu(nn).spkind = nan(size(sesspkind));
+            sess(sn).neu(nn).sx = []; sess(sn).neu(nn).sy = []; sess(sn).neu(nn).shd = [];
+            sess(sn).neu(nn).slv = []; sess(sn).neu(nn).sacc = [];
+        end
     end
 end
 
 %%
-for sn = 1
-    for nn = 1 : length(gcells)
-    figure(1);
-    plot(sess(sn).x,sess(sn).y,'color',[.5 .5 .5]); hold on;
-    scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,20,sess(sn).neu(nn).shd,'filled');
-    colormap(hsv); axis square; axis tight; 
-    pause; clf(1); 
+for nn = 1 : length(gcells)
+    for sn = 1 : 3
+        figure(1);
+        subplot(1,3,sn)
+        plot(sess(sn).x,sess(sn).y,'color',[.5 .5 .5]); hold on;
+        scatter(sess(sn).neu(nn).sx,sess(sn).neu(nn).sy,20,sess(sn).neu(nn).shd,'filled');
+        colormap(hsv); axis square; axis tight;
     end
+    pause; clf(1);
 end
 
 % 
